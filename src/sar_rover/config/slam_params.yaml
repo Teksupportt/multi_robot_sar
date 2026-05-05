@@ -1,0 +1,47 @@
+slam_toolbox:
+  ros__parameters:
+
+    # Plugin to use — async is better for real-time, doesn't block the executor
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+
+    # Mode — mapping builds a new map, localization uses existing
+    mode: mapping
+
+    # How often to process a scan (seconds)
+    map_update_interval: 0.5
+
+    # Map frame and odom frame
+    map_frame: map
+    odom_frame: odom
+    base_frame: base_footprint
+
+    # Laser scan topic — matches Isaac Sim output
+    scan_topic: /scan
+
+    # Resolution of the map in meters per cell
+    resolution: 0.05
+
+    # Map size in meters (can grow dynamically)
+    max_laser_range: 20.0
+
+    # Minimum distance rover must move before a new scan is processed
+    minimum_travel_distance: 0.5
+    minimum_travel_heading: 0.5
+
+    # Save map periodically (seconds), 0 = disabled
+    map_save_period: 0.0
+
+    # Use scan matching to correct odometry drift
+    use_scan_matching: true
+    use_scan_barycenter: true
+
+    # Loop closure — detects when rover revisits a place and corrects the map
+    loop_search_maximum_distance: 3.0
+    do_loop_closing: true
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_covariance: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
