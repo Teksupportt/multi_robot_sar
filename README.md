@@ -29,8 +29,8 @@ A full-stack robotics simulation of an autonomous search-and-rescue mission buil
 |---|---|---|
 | 1 — System Skeleton | ✅ Complete | ROS 2 communication backbone, custom message types |
 | 2 — Navigation + Localization | ✅ Complete | Nav2 + SLAM Toolbox, autonomous rover navigation |
-| 3 — Flight Control + Swarm | 🔧 In Progress | PX4 SITL, offboard control, 4-drone coordinated swarm |
-| 4 — Perception | ⬜ Planned | Computer vision pipeline, onboard inference |
+| 3 — Flight Control + Swarm | ✅ Complete | PX4 SITL, offboard control, 4-drone coordinated swarm |
+| 4 — Perception | 🔧 In Progress | Computer vision pipeline, onboard inference |
 | 5 — Benchmarking | ⬜ Planned | PX4 vs ArduPilot, A* vs RRT*, SLAM vs GPS |
 | 6 — Comm Stress Testing | ⬜ Planned | tc/netem impairments, QoS tuning |
 | 7 — Security | ⬜ Planned | SROS2, enclaves, access control |
