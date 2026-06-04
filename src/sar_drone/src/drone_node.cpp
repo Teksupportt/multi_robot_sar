@@ -1,3 +1,5 @@
+// ~/ros/sar_ws/src/sar_drone/src/drone_node.cpp
+
 #include "sar_drone/drone_node.hpp"
 #include <chrono>
 #include <cmath>
@@ -21,14 +23,15 @@ static constexpr uint8_t NAV_STATE_AUTO_LAND = 18;
 DroneNode::DroneNode(const rclcpp::NodeOptions & options)
 : Node("drone_node", options)
 {
-  // Parameters
   this->declare_parameter("drone_id", 0);
   this->declare_parameter("sector_size", 10.0);
   this->declare_parameter("detection_threshold", 1.0);
+  this->declare_parameter("test_mode", false);
 
   drone_id_            = static_cast<uint8_t>(this->get_parameter("drone_id").as_int());
   sector_size_         = this->get_parameter("sector_size").as_double();
   detection_threshold_ = this->get_parameter("detection_threshold").as_double();
+  test_mode_           = this->get_parameter("test_mode").as_bool();
   ns_                  = "drone_" + std::to_string(drone_id_);
 
   buildSectorWaypoints();
@@ -43,13 +46,13 @@ DroneNode::DroneNode(const rclcpp::NodeOptions & options)
 
   auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
 
-  // PX4 publishers — use drone namespace for multi-instance
+  // PX4 publishers
   offboard_ctrl_pub_ = this->create_publisher<px4_msgs::msg::OffboardControlMode>(
-    "/fmu/in/offboard_control_mode", px4_pub_qos);
+    "/" + ns_ + "/fmu/in/offboard_control_mode", px4_pub_qos);
   trajectory_pub_ = this->create_publisher<px4_msgs::msg::TrajectorySetpoint>(
-    "/fmu/in/trajectory_setpoint", px4_pub_qos);
+    "/" + ns_ + "/fmu/in/trajectory_setpoint", px4_pub_qos);
   vehicle_cmd_pub_ = this->create_publisher<px4_msgs::msg::VehicleCommand>(
-    "/fmu/in/vehicle_command", px4_pub_qos);
+    "/" + ns_ + "/fmu/in/vehicle_command", px4_pub_qos);
 
   // SAR publishers
   detection_pub_ = this->create_publisher<sar_interfaces::msg::TargetDetection>(
@@ -74,22 +77,30 @@ DroneNode::DroneNode(const rclcpp::NodeOptions & options)
     1000ms, std::bind(&DroneNode::publishSwarmStatus, this));
 
   RCLCPP_INFO(this->get_logger(),
-    "[%s] DroneNode initialized — sector_size=%.1f detection_threshold=%.1f",
-    ns_.c_str(), sector_size_, detection_threshold_);
+    "[%s] DroneNode initialized — sector_size=%.1f detection_threshold=%.1f test_mode=%s",
+    ns_.c_str(), sector_size_, detection_threshold_, test_mode_ ? "ON" : "OFF");
 }
 
-// ─── Sector Waypoints ────────────────────────────────────────────────────────
+// ─── Sector / Test Waypoints ──────────────────────────────────────────────────
 void DroneNode::buildSectorWaypoints()
 {
-  // 2x2 grid — each drone owns one quadrant
-  // drone_0: bottom-left  drone_1: bottom-right
-  // drone_2: top-left     drone_3: top-right
+  if (test_mode_) {
+    waypoints_ = {
+      {1.0f, 0.0f, CRUISE_ALTITUDE},
+      {1.0f, 1.0f, CRUISE_ALTITUDE},
+      {0.0f, 1.0f, CRUISE_ALTITUDE},
+      {0.0f, 0.0f, CRUISE_ALTITUDE},
+    };
+    RCLCPP_INFO(this->get_logger(),
+      "[%s] TEST MODE — 1m square pattern (offsets applied after position fix)",
+      ns_.c_str());
+    return;
+  }
+
   float half = static_cast<float>(sector_size_ / 2.0);
+  float ox = (drone_id_ % 2) * half;
+  float oy = (drone_id_ / 2) * half;
 
-  float ox = (drone_id_ % 2) * half;        // x offset
-  float oy = (drone_id_ / 2) * half;        // y offset
-
-  // Lawnmower pattern within sector
   waypoints_ = {
     {ox,        oy,        CRUISE_ALTITUDE},
     {ox + half, oy,        CRUISE_ALTITUDE},
@@ -120,9 +131,21 @@ void DroneNode::localPositionCallback(const px4_msgs::msg::VehicleLocalPosition:
     launch_y_ = current_y_;
     launch_z_ = current_z_;
     position_received_ = true;
+
     RCLCPP_INFO(this->get_logger(),
       "[%s] Launch position saved: [%.2f, %.2f, %.2f]",
       ns_.c_str(), launch_x_, launch_y_, launch_z_);
+
+    if (test_mode_ && !waypoints_offset_) {
+      for (auto & wp : waypoints_) {
+        wp.x += launch_x_;
+        wp.y += launch_y_;
+      }
+      waypoints_offset_ = true;
+      RCLCPP_INFO(this->get_logger(),
+        "[%s] Test waypoints offset to launch position (%.2f, %.2f)",
+        ns_.c_str(), launch_x_, launch_y_);
+    }
   }
 }
 
@@ -184,7 +207,6 @@ void DroneNode::handleOffboardRequested()
     arm();
     state_ = DroneState::ARMED;
   } else {
-    // Retry every 30 loops (3 seconds)
     if (offboard_setpoint_counter_ % 30 == 0) {
       RCLCPP_INFO(this->get_logger(), "[%s] Retrying offboard mode request", ns_.c_str());
       publishVehicleCommand(
@@ -248,6 +270,15 @@ void DroneNode::handleDetectionPublished()
 
 void DroneNode::handleRTL()
 {
+  float dx = current_x_ - launch_x_;
+  float dy = current_y_ - launch_y_;
+  float horizontal_dist = std::sqrt(dx*dx + dy*dy);
+
+  if (horizontal_dist < 1.0f) {
+    publishVehicleCommand(
+      px4_msgs::msg::VehicleCommand::VEHICLE_CMD_NAV_LAND);
+  }
+
   if (nav_state_ == NAV_STATE_AUTO_LAND ||
       arming_state_ != ARMING_STATE_ARMED)
   {
@@ -261,6 +292,9 @@ void DroneNode::handleLanded()
   RCLCPP_INFO(this->get_logger(), "[%s] Returning to IDLE", ns_.c_str());
   offboard_setpoint_counter_ = 0;
   current_waypoint_ = 0;
+  waypoints_offset_ = false;
+  position_received_ = false;
+  buildSectorWaypoints();
   state_ = DroneState::IDLE;
 }
 
@@ -292,9 +326,9 @@ void DroneNode::publishVehicleCommand(uint16_t command, float param1, float para
   msg.command          = command;
   msg.param1           = param1;
   msg.param2           = param2;
-  msg.target_system    = drone_id_ + 1;
+  msg.target_system    = drone_id_ + 2;
   msg.target_component = 1;
-  msg.source_system    = drone_id_ + 1;
+  msg.source_system    = drone_id_ + 2;
   msg.source_component = 1;
   msg.from_external    = true;
   msg.timestamp        = this->get_clock()->now().nanoseconds() / 1000;
@@ -316,6 +350,23 @@ void DroneNode::triggerRTL()
   RCLCPP_INFO(this->get_logger(), "[%s] RTL command sent", ns_.c_str());
 }
 
+void DroneNode::publishDetection()
+{
+  sar_interfaces::msg::TargetDetection msg{};
+  msg.stamp        = this->get_clock()->now();
+  msg.frame_id     = "map";
+  msg.target_x     = static_cast<double>(current_x_);
+  msg.target_y     = static_cast<double>(current_y_);
+  msg.target_z     = static_cast<double>(current_z_);
+  msg.confidence   = 0.99;
+  msg.label        = test_mode_ ? "test_target" : "person";
+  msg.detection_id = ++detection_id_;
+  detection_pub_->publish(msg);
+  RCLCPP_INFO(this->get_logger(),
+    "[%s] Detection published — id=%u pos=(%.2f, %.2f, %.2f)",
+    ns_.c_str(), detection_id_, msg.target_x, msg.target_y, msg.target_z);
+}
+
 // ─── Utility ─────────────────────────────────────────────────────────────────
 bool DroneNode::waypointReached(const Waypoint & wp, float threshold) const
 {
@@ -325,27 +376,9 @@ bool DroneNode::waypointReached(const Waypoint & wp, float threshold) const
   return std::sqrt(dx*dx + dy*dy + dz*dz) < threshold;
 }
 
-void DroneNode::publishDetection()
+std::string DroneNode::stateToString(DroneState s) const
 {
-  sar_interfaces::msg::TargetDetection msg{};
-  msg.stamp        = this->get_clock()->now();
-  msg.frame_id     = "map";
-  msg.target_x     = static_cast<double>(current_x_);
-  msg.target_y     = static_cast<double>(current_y_);
-  msg.target_z     = 0.0;
-  msg.confidence   = 0.95;
-  msg.label        = "person";
-  msg.detection_id = ++detection_id_;
-  detection_pub_->publish(msg);
-
-  RCLCPP_INFO(this->get_logger(),
-    "[%s] TargetDetection published [id=%u] at (%.2f, %.2f)",
-    ns_.c_str(), msg.detection_id, msg.target_x, msg.target_y);
-}
-
-std::string DroneNode::stateToString(DroneState state) const
-{
-  switch (state) {
+  switch (s) {
     case DroneState::IDLE:                return "IDLE";
     case DroneState::OFFBOARD_REQUESTED:  return "OFFBOARD_REQUESTED";
     case DroneState::ARMED:               return "ARMED";

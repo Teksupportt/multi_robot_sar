@@ -56,6 +56,7 @@ for i in 1 2 3 4; do
     $BUILD/bin/px4 -i $i -d $BUILD/etc 2>&1 | tee out.log
   "
 
+  rm -f /tmp/iris_$i.sdf
   # Generate SDF
   python3 $PX4_DIR/Tools/simulation/gazebo-classic/sitl_gazebo-classic/scripts/jinja_gen.py \
     $PX4_DIR/Tools/simulation/gazebo-classic/sitl_gazebo-classic/models/iris/iris.sdf.jinja \
@@ -68,11 +69,17 @@ for i in 1 2 3 4; do
     --mavlink_cam_udp_port $((14530+i)) \
     --output-file /tmp/iris_$i.sdf
 
+  sed -i "s|<ros><namespace>camera</namespace></ros>|<ros><namespace>drone_$N</namespace></ros>|g" /tmp/iris_$i.sdf
+  sed -i "s|name=\"camera_plugin\"|name=\"camera_plugin_$N\"|g" /tmp/iris_$i.sdf
+
   gz model --spawn-file=/tmp/iris_$i.sdf \
     --model-name=iris_$i -x $X -y $Y -z 0.83
 
   sleep 2
 done
+
+gzclient &
+sleep 3
 
 # ─────────────────────────────────────────────
 # Start XRCE-DDS agents (one per drone, named screen sessions)
@@ -153,10 +160,6 @@ for i in 1 2 3 4; do
   echo "[swarm] MAVProxy for drone $N started (screen: mav_$N)"
 done
 
-# ─────────────────────────────────────────────
-# Start Gazebo client
-# ─────────────────────────────────────────────
-gzclient &
 
 # ─────────────────────────────────────────────
 echo ""
